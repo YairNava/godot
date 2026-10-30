@@ -35,6 +35,7 @@
 #include "core/license.gen.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
+#include "core/version.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/gui/credits_roll.h"
@@ -57,6 +58,7 @@ void EditorAbout::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_TRANSLATION_CHANGED: {
 			_about_text_label->set_text(
+					String(GODOT_VERSION_NAME) + ": " + TTR("a fork of Godot Engine.") + "\n" +
 					String(U"© 2014-present ") + TTR("Godot Engine contributors") + ".\n" +
 					String(U"© 2007-2014 Juan Linietsky, Ariel Manzur.\n"));
 

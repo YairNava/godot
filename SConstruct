@@ -120,6 +120,8 @@ if "TERM" in os.environ:  # Used for colored output.
 
 env.disabled_modules = set()
 env.module_version_string = ""
+# Wayforge: the binaries are named for the engine (version.py's short_name), not "godot".
+env["binary_name"] = methods.get_version_info(silent=True)["short_name"]
 env.msvc = False
 env.scons_version = env._get_major_minor_revision(scons_raw_version)
 

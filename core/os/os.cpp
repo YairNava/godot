@@ -292,8 +292,9 @@ String OS::get_safe_dir_name(const String &p_dir_name, bool p_allow_paths) const
 
 // Get properly capitalized engine name for system paths
 String OS::get_godot_dir_name() const {
-	// Default to lowercase, so only override when different case is needed
-	return String(GODOT_VERSION_SHORT_NAME).to_lower();
+	// Wayforge keeps Godot's folder for user data (saves, settings, the editor's own), so a game
+	// and its players' files stay where they were across the fork.
+	return "godot";
 }
 
 // OS equivalent of XDG_DATA_HOME
