@@ -12,6 +12,7 @@ What's different from upstream, in the order it was added (each item on its own 
 |---|---|
 | The name: Wayforge in the window titles, the about box, the console header, the binaries (`wayforge.<platform>.<target>...`); its own logo and app icon | `version.py`, `SConstruct` (`binary_name`), `platform/*/SCsub`, `editor/icons/Logo.svg`, `TitleBarLogo.svg`, `main/app_icon.png` |
 | User data stays in Godot's folder (`~/.local/share/godot/`, `%APPDATA%/Godot/`), so games' saves and settings don't move | `core/os/os.cpp`, `platform/windows/os_windows.cpp` (`get_godot_dir_name`) |
+| The graphics card's memory: `RenderingDevice.get_video_memory_budget()` (the card's own memory, this process's budget in it after other processes' share, its usage; `VK_EXT_memory_budget`), and `CompressedTexture2D.set_global_size_limit()` (textures with mipmaps load no bigger than that, their top levels left on disk; the loader's broken size-limit paths fixed) | `drivers/vulkan/rendering_*_driver_vulkan.*`, `servers/rendering/rendering_device*`, `scene/resources/compressed_texture.*` |
 
 The game that drives it (AIGE) keeps the roadmap: `docs/engine/ROADMAP.md` there.
 

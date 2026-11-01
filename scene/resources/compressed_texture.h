@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/templates/safe_refcount.h"
 #include "scene/resources/texture.h"
 #include "servers/rendering/rendering_server_enums.h"
 
@@ -60,6 +61,10 @@ public:
 	};
 
 private:
+	// Wayforge: textures with mipmaps load no bigger than this on a side (0: no limit), their top
+	// levels left on disk (the graphics settings' texture detail, chosen for the card's memory).
+	static SafeNumeric<int> global_size_limit;
+
 	String path_to_file;
 	mutable RID texture;
 	Image::Format format = Image::FORMAT_L8;
@@ -79,6 +84,9 @@ protected:
 
 public:
 	static Ref<Image> load_image_from_file(Ref<FileAccess> p_file, int p_size_limit);
+
+	static void set_global_size_limit(int p_pixels);
+	static int get_global_size_limit();
 
 	typedef void (*TextureFormatRequestCallback)(const Ref<CompressedTexture2D> &);
 	typedef void (*TextureFormatRoughnessRequestCallback)(const Ref<CompressedTexture2D> &, const String &p_normal_path, RSE::TextureDetectRoughnessChannel p_roughness_channel);

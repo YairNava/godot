@@ -49,6 +49,7 @@ public:
 		// Physical device.
 		PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2 = nullptr;
 		PFN_vkGetPhysicalDeviceProperties2 GetPhysicalDeviceProperties2 = nullptr;
+		PFN_vkGetPhysicalDeviceMemoryProperties2 GetPhysicalDeviceMemoryProperties2 = nullptr;
 
 		// Device.
 		PFN_vkGetDeviceProcAddr GetDeviceProcAddr = nullptr;

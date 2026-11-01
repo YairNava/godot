@@ -1932,6 +1932,7 @@ public:
 	};
 
 	uint64_t get_memory_usage(MemoryType p_type) const;
+	Dictionary get_video_memory_budget() const;
 
 	RenderingDevice *create_local_device();
 

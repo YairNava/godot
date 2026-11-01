@@ -36,6 +36,16 @@
 #include "scene/resources/bit_map.h"
 #include "servers/rendering/rendering_server.h"
 
+SafeNumeric<int> CompressedTexture2D::global_size_limit;
+
+void CompressedTexture2D::set_global_size_limit(int p_pixels) {
+	global_size_limit.set(MAX(p_pixels, 0));
+}
+
+int CompressedTexture2D::get_global_size_limit() {
+	return global_size_limit.get();
+}
+
 Error CompressedTexture2D::_load_data(const String &p_path, int &r_width, int &r_height, Ref<Image> &image, bool &r_request_3d, bool &r_request_normal, bool &r_request_roughness, int &mipmap_limit, int p_size_limit) {
 	alpha_cache.unref();
 
@@ -81,6 +91,12 @@ Error CompressedTexture2D::_load_data(const String &p_path, int &r_width, int &r
 #endif
 	if (!(df & FORMAT_BIT_STREAM)) {
 		p_size_limit = 0;
+	}
+	// Wayforge: the global limit applies to every texture with mipmaps (3D surfaces; the interface's
+	// textures have none and keep their size). The texture still reports its full size.
+	const int global_limit = global_size_limit.get();
+	if (global_limit > 0 && (df & FORMAT_BIT_HAS_MIPMAPS) && (p_size_limit == 0 || global_limit < p_size_limit)) {
+		p_size_limit = global_limit;
 	}
 
 	image = load_image_from_file(f, p_size_limit);
@@ -317,7 +333,7 @@ Ref<Image> CompressedTexture2D::load_image_from_file(Ref<FileAccess> f, int p_si
 		for (uint32_t i = 0; i < mipmaps + 1; i++) {
 			uint32_t size = f->get_32();
 
-			if (p_size_limit > 0 && i < (mipmaps - 1) && (sw > p_size_limit || sh > p_size_limit)) {
+			if (p_size_limit > 0 && mipmaps > 0 && i < mipmaps && (sw > p_size_limit || sh > p_size_limit)) {
 				//can't load this due to size limit
 				sw = MAX(sw >> 1, 1);
 				sh = MAX(sh >> 1, 1);
@@ -391,7 +407,8 @@ Ref<Image> CompressedTexture2D::load_image_from_file(Ref<FileAccess> f, int p_si
 				}
 			}
 
-			image->set_data(w, h, true, mipmap_images[0]->get_format(), img_data);
+			// (the first level kept: with a size limit, not the file's own size)
+			image->set_data(mipmap_images[0]->get_width(), mipmap_images[0]->get_height(), true, mipmap_images[0]->get_format(), img_data);
 			return image;
 		}
 
@@ -423,17 +440,18 @@ Ref<Image> CompressedTexture2D::load_image_from_file(Ref<FileAccess> f, int p_si
 		return img;
 	} else if (data_format == DATA_FORMAT_IMAGE) {
 		int size = Image::get_image_data_size(w, h, format, mipmaps ? true : false);
+		const uint64_t data_start = f->get_position();
 
 		for (uint32_t i = 0; i < mipmaps + 1; i++) {
 			int tw, th;
 			int ofs = Image::get_image_mipmap_offset_and_dimensions(w, h, format, i, tw, th);
 
-			if (p_size_limit > 0 && i < mipmaps && (p_size_limit > tw || p_size_limit > th)) {
-				if (ofs) {
-					f->seek(f->get_position() + ofs);
-				}
-				continue; //oops, size limit enforced, go to next
+			// Wayforge: skip the levels bigger than the limit (it was inverted, skipping the small
+			// ones, and seeked from where the last skip left off); the smallest is always kept.
+			if (p_size_limit > 0 && i < mipmaps && (tw > p_size_limit || th > p_size_limit)) {
+				continue;
 			}
+			f->seek(data_start + ofs);
 
 			Vector<uint8_t> data;
 			data.resize(size - ofs);
@@ -455,6 +473,8 @@ Ref<Image> CompressedTexture2D::load_image_from_file(Ref<FileAccess> f, int p_si
 void CompressedTexture2D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load", "path"), &CompressedTexture2D::load);
 	ClassDB::bind_method(D_METHOD("get_load_path"), &CompressedTexture2D::get_load_path);
+	ClassDB::bind_static_method("CompressedTexture2D", D_METHOD("set_global_size_limit", "pixels"), &CompressedTexture2D::set_global_size_limit);
+	ClassDB::bind_static_method("CompressedTexture2D", D_METHOD("get_global_size_limit"), &CompressedTexture2D::get_global_size_limit);
 
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "load_path", PROPERTY_HINT_FILE, "*.ctex"), "load", "get_load_path");
 }

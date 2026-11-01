@@ -936,6 +936,10 @@ public:
 	virtual uint64_t get_resource_native_handle(DriverResource p_type, ID p_driver_id) = 0;
 	virtual uint64_t get_total_memory_used() = 0;
 	virtual uint64_t get_lazily_memory_used() = 0;
+	// Wayforge: the card's own memory (its largest device-local heap), this process's budget in it
+	// (what the driver will let it use, after other processes' share) and its usage now. False if
+	// the driver can't tell.
+	virtual bool get_video_memory_budget(uint64_t &r_heap_size, uint64_t &r_budget, uint64_t &r_usage) { return false; }
 	virtual uint64_t limit_get(Limit p_limit) = 0;
 	virtual uint64_t api_trait_get(ApiTrait p_trait);
 	virtual bool has_feature(Features p_feature) = 0;

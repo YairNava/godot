@@ -586,6 +586,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 	_register_requested_device_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, false);
+	_register_requested_device_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, false); // Wayforge: get_video_memory_budget().
 
 	// We don't actually use this extension, but some runtime components on some platforms
 	// can and will fill the validation layers with useless info otherwise if not enabled.
@@ -7262,6 +7263,39 @@ uint64_t RenderingDeviceDriverVulkan::get_total_memory_used() {
 
 uint64_t RenderingDeviceDriverVulkan::get_lazily_memory_used() {
 	return vmaCalculateLazilyAllocatedBytes(allocator);
+}
+
+bool RenderingDeviceDriverVulkan::get_video_memory_budget(uint64_t &r_heap_size, uint64_t &r_budget, uint64_t &r_usage) {
+	// Wayforge: VK_EXT_memory_budget, asked directly (VMA's own budget tracking stays off): the
+	// driver's budget for this process already counts what other processes hold on the card.
+	const RenderingContextDriverVulkan::Functions &functions = context_driver->functions_get();
+	if (functions.GetPhysicalDeviceMemoryProperties2 == nullptr || !enabled_device_extension_names.has(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+		return false;
+	}
+
+	VkPhysicalDeviceMemoryBudgetPropertiesEXT budget_properties = {};
+	budget_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+	VkPhysicalDeviceMemoryProperties2 properties = {};
+	properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+	properties.pNext = &budget_properties;
+	functions.GetPhysicalDeviceMemoryProperties2(physical_device, &properties);
+
+	// The largest device-local heap: the card's own memory (an integrated GPU has just the one).
+	const VkPhysicalDeviceMemoryProperties &memory = properties.memoryProperties;
+	int64_t best = -1;
+	for (uint32_t i = 0; i < memory.memoryHeapCount; i++) {
+		if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && (best < 0 || memory.memoryHeaps[i].size > memory.memoryHeaps[best].size)) {
+			best = i;
+		}
+	}
+	if (best < 0) {
+		return false;
+	}
+
+	r_heap_size = memory.memoryHeaps[best].size;
+	r_budget = budget_properties.heapBudget[best];
+	r_usage = budget_properties.heapUsage[best];
+	return true;
 }
 
 uint64_t RenderingDeviceDriverVulkan::limit_get(Limit p_limit) {
