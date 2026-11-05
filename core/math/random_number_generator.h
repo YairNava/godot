@@ -52,8 +52,11 @@ public:
 
 	_FORCE_INLINE_ uint32_t randi() { return randbase.rand(); }
 	_FORCE_INLINE_ real_t randf() { return randbase.randf(); }
-	_FORCE_INLINE_ real_t randf_range(real_t p_from, real_t p_to) { return randbase.random(p_from, p_to); }
-	_FORCE_INLINE_ real_t randfn(real_t p_mean = 0.0, real_t p_deviation = 1.0) { return randbase.randfn(p_mean, p_deviation); }
+	// Wayforge: the single-precision draws whatever real_t is. With precision=double these took
+	// randd(), which uses three of the generator's outputs where randf() uses two, so every seeded
+	// stream (a world made from its seed) came out different from a single-precision build's.
+	_FORCE_INLINE_ real_t randf_range(real_t p_from, real_t p_to) { return randbase.random((float)p_from, (float)p_to); }
+	_FORCE_INLINE_ real_t randfn(real_t p_mean = 0.0, real_t p_deviation = 1.0) { return randbase.randfn((float)p_mean, (float)p_deviation); }
 	_FORCE_INLINE_ int randi_range(int p_from, int p_to) { return randbase.random(p_from, p_to); }
 
 	_FORCE_INLINE_ int64_t rand_weighted(const Vector<float> &p_weights) { return randbase.rand_weighted(p_weights); }
