@@ -16,7 +16,7 @@
 			Flags for the instance.
 		</member>
 		<member name="hit_sbt_range" type="int" setter="set_hit_sbt_range" getter="get_hit_sbt_range" default="0">
-			Hit shader binding table range used for this instance, allocated using the [method RenderingDevice.hit_sbt_range_alloc] method.
+			Hit shader binding table range used for this instance, allocated using the [method RenderingDevice.hit_sbt_range_alloc] method. Leave it at [code]0[/code] for a TLAS only traced with ray queries (it has no hit shaders).
 		</member>
 		<member name="id" type="int" setter="set_id" getter="get_id" default="0">
 			Custom instance ID that can be accessed in GLSL using [code]gl_InstanceCustomIndexEXT[/code].

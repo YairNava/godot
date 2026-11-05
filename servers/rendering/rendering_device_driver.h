@@ -798,6 +798,12 @@ public:
 
 	virtual void command_build_blas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer) = 0;
 	virtual void command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) = 0;
+	// Wayforge: refits. An update keeps a structure's tree and moves its contents in place (new
+	// vertex positions, new instance transforms), for a fraction of a build's cost. The structure was
+	// created with ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT and built before (RenderingDevice checks).
+	// Drivers without refits build instead.
+	virtual void command_update_blas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer) { command_build_blas(p_cmd_buffer, p_acceleration_structure, p_scratch_buffer); }
+	virtual void command_update_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) { command_build_tlas(p_cmd_buffer, p_acceleration_structure, p_scratch_buffer, p_instance_buffer, p_instance_offset, p_instance_count); }
 	virtual void command_bind_raytracing_pipeline(CommandBufferID p_cmd_buffer, RaytracingPipelineID p_pipeline) = 0;
 	virtual void command_bind_raytracing_uniform_set(CommandBufferID p_cmd_buffer, UniformSetID p_uniform_set, ShaderID p_shader, uint32_t p_set_index) = 0;
 

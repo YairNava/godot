@@ -1330,6 +1330,11 @@ private:
 		HashSet<RID> acceleration_structure_dependencies;
 		bool invalidated = true;
 
+		// Wayforge: refits. A structure created with ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT can be
+		// updated in place once it has been built.
+		BitField<AccelerationStructureFlagBits> flags = {};
+		bool built = false;
+
 		// Scratch buffer used during build, owned by the AS.
 		RDD::BufferID scratch_buffer;
 
@@ -1339,6 +1344,9 @@ private:
 
 		// --- Top Level ---
 		uint32_t max_instance_count = 0;
+		// Wayforge: which of the last build's instances had a BLAS. A refit keeps the instance count
+		// and never turns an instance on or off (VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03663/03664/03769).
+		LocalVector<bool> built_instances_active;
 
 		struct InstanceBuffer {
 			RDD::BufferID driver_id;
@@ -1353,6 +1361,7 @@ private:
 	Error _acceleration_structure_scratch_buffer_create(AccelerationStructure *p_acceleration_structure);
 	void _blas_remove_tlas_dependencies(AccelerationStructure *p_blas, RID p_blas_id);
 	void _tlas_remove_blas_dependencies(AccelerationStructure *p_tlas, RID p_tlas_id);
+	bool _uniform_set_has_valid_acceleration_structures(const UniformSet *p_uniform_set);
 
 	RID_Owner<AccelerationStructure, true> acceleration_structure_owner;
 
@@ -1385,8 +1394,14 @@ public:
 
 	Error blas_build(RID p_blas);
 	Error tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances);
+	// Wayforge: refits (see blas_update and tlas_update in RenderingDevice.xml).
+	Error blas_update(RID p_blas);
+	Error tlas_update(RID p_tlas, Span<AccelerationStructureInstance> p_instances);
 
 private:
+	Error _blas_build(RID p_blas, bool p_update);
+	Error _tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances, bool p_update);
+
 	/**********************************/
 	/**** HIT SHADER BINDING TABLE ****/
 	/**********************************/
@@ -2009,7 +2024,8 @@ private:
 	Error _buffer_update_bind(RID p_buffer, uint32_t p_offset, uint32_t p_size, const Vector<uint8_t> &p_data);
 
 	RID _blas_create(const TypedArray<RDAccelerationStructureGeometry> &p_geometries, BitField<AccelerationStructureFlagBits> p_flags);
-	Error _tlas_build(RID p_tlas, const TypedArray<RDAccelerationStructureInstance> &p_instances);
+	Error _tlas_build_bind(RID p_tlas, const TypedArray<RDAccelerationStructureInstance> &p_instances);
+	Error _tlas_update_bind(RID p_tlas, const TypedArray<RDAccelerationStructureInstance> &p_instances);
 
 	Error _hit_sbt_range_update(RID p_hit_sbt, HitShaderBindingTableRange p_range, uint32_t p_offset, const Vector<int32_t> &p_hit_group_indices);
 

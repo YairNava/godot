@@ -6488,7 +6488,12 @@ bool RenderingDeviceDriverVulkan::_acceleration_structure_create(VkAccelerationS
 
 	// Scratch address must be a multiple of minAccelerationStructureScratchOffsetAlignment.
 	r_accel_info->scratch_alignment = acceleration_structure_capabilities.min_acceleration_structure_scratch_offset_alignment;
-	r_accel_info->scratch_size = p_size_info.buildScratchSize + r_accel_info->scratch_alignment;
+	// Wayforge: one scratch buffer serves builds and refits, so it fits the larger of the two.
+	VkDeviceSize scratch_size = p_size_info.buildScratchSize;
+	if (r_accel_info->build_info.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) {
+		scratch_size = MAX(scratch_size, p_size_info.updateScratchSize);
+	}
+	r_accel_info->scratch_size = scratch_size + r_accel_info->scratch_alignment;
 
 	VkAccelerationStructureCreateInfoKHR accel_create_info = {};
 	accel_create_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
@@ -6539,12 +6544,23 @@ VkStridedDeviceAddressRegionKHR RenderingDeviceDriverVulkan::_sbt_to_vk_strided_
 
 // ----- COMMANDS -----
 
-void RenderingDeviceDriverVulkan::command_build_blas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer) {
+#if VULKAN_RAYTRACING_ENABLED
+// A build makes the structure anew; an update (Wayforge: a refit) reads the structure's last build and
+// writes the moved contents over it in place (VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03668
+// allows source and destination to be the same structure).
+static _FORCE_INLINE_ void _set_acceleration_structure_build_mode(VkAccelerationStructureBuildGeometryInfoKHR &r_build_info, bool p_update) {
+	r_build_info.mode = p_update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	r_build_info.srcAccelerationStructure = p_update ? r_build_info.dstAccelerationStructure : VK_NULL_HANDLE;
+}
+#endif
+
+void RenderingDeviceDriverVulkan::_command_build_blas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, bool p_update) {
 #if VULKAN_RAYTRACING_ENABLED
 	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
 	AccelerationStructureInfo *accel_info = (AccelerationStructureInfo *)p_acceleration_structure.id;
 
 	VkAccelerationStructureBuildGeometryInfoKHR *build_info = &accel_info->build_info;
+	_set_acceleration_structure_build_mode(*build_info, p_update);
 	VkDeviceAddress scratch_address = buffer_get_device_address(p_scratch_buffer);
 	build_info->scratchData.deviceAddress = _align_up_address(scratch_address, accel_info->scratch_alignment);
 
@@ -6554,7 +6570,7 @@ void RenderingDeviceDriverVulkan::command_build_blas(CommandBufferID p_cmd_buffe
 #endif
 }
 
-void RenderingDeviceDriverVulkan::command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) {
+void RenderingDeviceDriverVulkan::_command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count, bool p_update) {
 #if VULKAN_RAYTRACING_ENABLED
 	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
 	AccelerationStructureInfo *accel_info = (AccelerationStructureInfo *)p_acceleration_structure.id;
@@ -6563,6 +6579,7 @@ void RenderingDeviceDriverVulkan::command_build_tlas(CommandBufferID p_cmd_buffe
 	accel_info->range_infos[0].primitiveCount = p_instance_count;
 
 	VkAccelerationStructureBuildGeometryInfoKHR *build_info = &accel_info->build_info;
+	_set_acceleration_structure_build_mode(*build_info, p_update);
 	VkDeviceAddress scratch_address = buffer_get_device_address(p_scratch_buffer);
 	build_info->scratchData.deviceAddress = _align_up_address(scratch_address, accel_info->scratch_alignment);
 
@@ -6570,6 +6587,22 @@ void RenderingDeviceDriverVulkan::command_build_tlas(CommandBufferID p_cmd_buffe
 
 	device_functions.CmdBuildAccelerationStructuresKHR(command_buffer->vk_command_buffer, 1, build_info, &range_infos);
 #endif
+}
+
+void RenderingDeviceDriverVulkan::command_build_blas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer) {
+	_command_build_blas(p_cmd_buffer, p_acceleration_structure, p_scratch_buffer, false);
+}
+
+void RenderingDeviceDriverVulkan::command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) {
+	_command_build_tlas(p_cmd_buffer, p_acceleration_structure, p_scratch_buffer, p_instance_buffer, p_instance_offset, p_instance_count, false);
+}
+
+void RenderingDeviceDriverVulkan::command_update_blas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer) {
+	_command_build_blas(p_cmd_buffer, p_acceleration_structure, p_scratch_buffer, true);
+}
+
+void RenderingDeviceDriverVulkan::command_update_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) {
+	_command_build_tlas(p_cmd_buffer, p_acceleration_structure, p_scratch_buffer, p_instance_buffer, p_instance_offset, p_instance_count, true);
 }
 
 void RenderingDeviceDriverVulkan::command_bind_raytracing_pipeline(CommandBufferID p_cmd_buffer, RaytracingPipelineID p_pipeline) {

@@ -324,6 +324,9 @@ RID RenderingDevice::blas_create(Span<AccelerationStructureGeometry> p_geometrie
 
 		Buffer *vertex_buffer = vertex_buffer_owner.get_or_null(rd_geometry.vertex_buffer);
 		ERR_FAIL_NULL_V(vertex_buffer, RID());
+		// Wayforge: a build reads its inputs through their device addresses; a buffer made without them would fault on the GPU.
+		ERR_FAIL_COND_V_MSG(!vertex_buffer->usage.has_flag(RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT) || !vertex_buffer->usage.has_flag(RDD::BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT), RID(),
+				"The vertex buffer of an acceleration structure must be created with BUFFER_CREATION_DEVICE_ADDRESS_BIT and BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT.");
 
 		ERR_FAIL_COND_V_MSG((rd_geometry.vertex_offset + rd_geometry.vertex_count * rd_geometry.vertex_stride) > vertex_buffer->size, RID(), "The specified vertex offset and count are outside the range of the vertex buffer.");
 		ERR_FAIL_COND_V_MSG(rd_geometry.vertex_format >= DataFormat::DATA_FORMAT_MAX, RID(), "An invalid vertex format was specified.");
@@ -345,6 +348,8 @@ RID RenderingDevice::blas_create(Span<AccelerationStructureGeometry> p_geometrie
 		if (rd_geometry.index_buffer.is_valid()) {
 			IndexBuffer *index_buffer = index_buffer_owner.get_or_null(rd_geometry.index_buffer);
 			ERR_FAIL_NULL_V(index_buffer, RID());
+			ERR_FAIL_COND_V_MSG(!index_buffer->usage.has_flag(RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT) || !index_buffer->usage.has_flag(RDD::BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT), RID(),
+					"The index buffer of an acceleration structure must be created with BUFFER_CREATION_DEVICE_ADDRESS_BIT and BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT.");
 
 			uint32_t index_stride = (index_buffer->format == INDEX_BUFFER_FORMAT_UINT32 ? sizeof(uint32_t) : sizeof(uint16_t));
 			ERR_FAIL_COND_V_MSG((rd_geometry.index_offset + rd_geometry.index_count * index_stride) > index_buffer->size, RID(), "The specified index offset and count are outside the range of the index buffer.");
@@ -369,6 +374,7 @@ RID RenderingDevice::blas_create(Span<AccelerationStructureGeometry> p_geometrie
 	acceleration_structure.type = RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
 	acceleration_structure.driver_id = driver->blas_create(rdd_geometries, p_flags);
 	ERR_FAIL_COND_V_MSG(!acceleration_structure.driver_id, RID(), "Failed to create BLAS.");
+	acceleration_structure.flags = p_flags;
 
 	acceleration_structure.draw_tracker = RDG::resource_tracker_create();
 	acceleration_structure.draw_tracker->acceleration_structure_driver_id = acceleration_structure.driver_id;
@@ -428,6 +434,7 @@ RID RenderingDevice::tlas_create(uint32_t p_max_instance_count, BitField<Acceler
 	acceleration_structure.type = RDD::ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
 	acceleration_structure.driver_id = driver->tlas_create(p_max_instance_count, p_flags);
 	ERR_FAIL_COND_V_MSG(!acceleration_structure.driver_id, RID(), "Failed to create TLAS.");
+	acceleration_structure.flags = p_flags;
 
 	acceleration_structure.draw_tracker = RDG::resource_tracker_create();
 	acceleration_structure.draw_tracker->acceleration_structure_driver_id = acceleration_structure.driver_id;
@@ -444,6 +451,14 @@ RID RenderingDevice::tlas_create(uint32_t p_max_instance_count, BitField<Acceler
 }
 
 Error RenderingDevice::blas_build(RID p_blas) {
+	return _blas_build(p_blas, false);
+}
+
+Error RenderingDevice::blas_update(RID p_blas) {
+	return _blas_build(p_blas, true);
+}
+
+Error RenderingDevice::_blas_build(RID p_blas, bool p_update) {
 	ERR_RENDER_THREAD_GUARD_V(ERR_UNAVAILABLE);
 
 	ERR_FAIL_COND_V_MSG(draw_list.active, ERR_INVALID_PARAMETER, "Building BLAS is forbidden during creation of a draw list.");
@@ -452,19 +467,47 @@ Error RenderingDevice::blas_build(RID p_blas) {
 
 	AccelerationStructure *blas = acceleration_structure_owner.get_or_null(p_blas);
 	ERR_FAIL_NULL_V_MSG(blas, ERR_INVALID_PARAMETER, "BLAS argument is not valid.");
+	ERR_FAIL_COND_V_MSG(blas->type != RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, ERR_INVALID_PARAMETER, "BLAS argument is not a bottom-level acceleration structure.");
+
+	// Wayforge: a refit needs a structure made to be refit and built once; otherwise it's built.
+	bool update = p_update && blas->built;
+	if (update && !blas->flags.has_flag(ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT)) {
+		WARN_PRINT_ONCE("blas_update(): the BLAS wasn't created with ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT, so it's rebuilt instead.");
+		update = false;
+	}
 
 	Error err = _acceleration_structure_scratch_buffer_create(blas);
 	ERR_FAIL_COND_V(err != OK, err);
 
-	draw_graph.add_blas_build(blas->driver_id, blas->scratch_buffer, blas->draw_tracker, blas->draw_trackers);
+	// Wayforge: the TLASes made with this BLAS, so the build waits for whatever traces through them.
+	thread_local LocalVector<RDG::ResourceTracker *> tlas_trackers;
+	tlas_trackers.clear();
+	for (RID tlas_id : blas->acceleration_structure_dependencies) {
+		AccelerationStructure *tlas = acceleration_structure_owner.get_or_null(tlas_id);
+		if (tlas != nullptr && tlas->draw_tracker != nullptr) {
+			tlas_trackers.push_back(tlas->draw_tracker);
+		}
+	}
+
+	draw_graph.add_blas_build(blas->driver_id, blas->scratch_buffer, blas->draw_tracker, blas->draw_trackers, tlas_trackers, update);
 
 	blas->invalidated = false;
+	blas->built = true;
+	// A TLAS holds its BLASes' bounds: after a build or a refit, it must be built or refit again.
 	_blas_remove_tlas_dependencies(blas, p_blas);
 
 	return OK;
 }
 
 Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances) {
+	return _tlas_build(p_tlas, p_instances, false);
+}
+
+Error RenderingDevice::tlas_update(RID p_tlas, Span<AccelerationStructureInstance> p_instances) {
+	return _tlas_build(p_tlas, p_instances, true);
+}
+
+Error RenderingDevice::_tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances, bool p_update) {
 	ERR_RENDER_THREAD_GUARD_V(ERR_UNAVAILABLE);
 
 	ERR_FAIL_COND_V_MSG(draw_list.active, ERR_INVALID_PARAMETER, "Building TLAS is forbidden during creation of a draw list.");
@@ -473,7 +516,19 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 
 	AccelerationStructure *tlas = acceleration_structure_owner.get_or_null(p_tlas);
 	ERR_FAIL_NULL_V_MSG(tlas, ERR_INVALID_PARAMETER, "TLAS argument is not valid.");
+	ERR_FAIL_COND_V_MSG(tlas->type != RDD::ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL, ERR_INVALID_PARAMETER, "TLAS argument is not a top-level acceleration structure.");
 	ERR_FAIL_COND_V_MSG(p_instances.size() > tlas->max_instance_count, ERR_INVALID_PARAMETER, "Exceeded the maximum amount of instances allowed in the TLAS.");
+
+	// Wayforge: a refit keeps the last build's instances (their number, and which ones have a
+	// BLAS); anything else is built anew.
+	bool update = p_update && tlas->built && tlas->built_instances_active.size() == p_instances.size();
+	if (update && !tlas->flags.has_flag(ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT)) {
+		WARN_PRINT_ONCE("tlas_update(): the TLAS wasn't created with ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT, so it's rebuilt instead.");
+		update = false;
+	}
+	for (uint32_t i = 0; update && i < p_instances.size(); i++) {
+		update = tlas->built_instances_active[i] == p_instances[i].blas.is_valid();
+	}
 
 	Error err = _acceleration_structure_scratch_buffer_create(tlas);
 	ERR_FAIL_COND_V(err != OK, err);
@@ -539,12 +594,11 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 		rdd_instance.transform = rd_instance.transform;
 		rdd_instance.id = rd_instance.id;
 		rdd_instance.mask = rd_instance.mask;
-		rdd_instance.hit_sbt_offset = _decode_hit_sbt_range_offset(rd_instance.hit_sbt_range);
+		// Wayforge: ray queries have no hit shaders: an instance without a hit SBT range (0) gets offset 0.
+		rdd_instance.hit_sbt_offset = rd_instance.hit_sbt_range ? _decode_hit_sbt_range_offset(rd_instance.hit_sbt_range) : 0;
 		rdd_instance.flags = rd_instance.flags;
 
 		if (rd_instance.blas.is_valid()) {
-			ERR_FAIL_COND_V_MSG(!rd_instance.hit_sbt_range, ERR_INVALID_PARAMETER, "Instance " + itos(i) + " has an invalid hit shader binding table range.");
-
 			AccelerationStructure *blas = acceleration_structure_owner.get_or_null(rd_instance.blas);
 			ERR_FAIL_NULL_V(blas, ERR_INVALID_PARAMETER);
 			ERR_FAIL_COND_V(blas->type != RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, ERR_INVALID_PARAMETER);
@@ -564,11 +618,28 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 		driver->acceleration_structure_instance_write(instance_buffer.data_ptr + instance_buffer_offset + (instance_size * i), rdd_instance);
 	}
 
-	draw_graph.add_tlas_build(tlas->driver_id, tlas->scratch_buffer, instance_buffer.driver_id, instance_buffer_offset, p_instances.size(), tlas->draw_tracker, draw_trackers);
+	draw_graph.add_tlas_build(tlas->driver_id, tlas->scratch_buffer, instance_buffer.driver_id, instance_buffer_offset, p_instances.size(), tlas->draw_tracker, draw_trackers, update);
 
 	tlas->invalidated = false;
+	tlas->built = true;
+	if (!update) {
+		tlas->built_instances_active.resize(p_instances.size());
+		for (uint32_t i = 0; i < p_instances.size(); i++) {
+			tlas->built_instances_active[i] = p_instances[i].blas.is_valid();
+		}
+	}
 
 	return OK;
+}
+
+bool RenderingDevice::_uniform_set_has_valid_acceleration_structures(const UniformSet *p_uniform_set) {
+	for (RID acceleration_structure_id : p_uniform_set->acceleration_structures) {
+		const AccelerationStructure *acceleration_structure = acceleration_structure_owner.get_or_null(acceleration_structure_id);
+		if (acceleration_structure == nullptr || acceleration_structure->invalidated) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /**********************************/
@@ -5785,6 +5856,9 @@ void RenderingDevice::draw_list_bind_uniform_set(DrawListID p_list, RID p_unifor
 
 	const UniformSet *uniform_set = uniform_set_owner.get_or_null(p_uniform_set);
 	ERR_FAIL_NULL(uniform_set);
+	// Wayforge: see compute_list_bind_uniform_set().
+	ERR_FAIL_COND_MSG(!uniform_set->acceleration_structures.is_empty() && !_uniform_set_has_valid_acceleration_structures(uniform_set),
+			"An acceleration structure in the uniform set was never built, or its BLASes were built or refit since: build or refit it (tlas_build(), tlas_update()) before binding it.");
 
 	if (p_index > draw_list.state.set_count) {
 		draw_list.state.set_count = p_index;
@@ -6754,6 +6828,9 @@ void RenderingDevice::compute_list_bind_uniform_set(ComputeListID p_list, RID p_
 
 	UniformSet *uniform_set = uniform_set_owner.get_or_null(p_uniform_set);
 	ERR_FAIL_NULL(uniform_set);
+	// Wayforge: ray queries through a TLAS that was never built (or whose BLASes changed since) read garbage on the GPU.
+	ERR_FAIL_COND_MSG(!uniform_set->acceleration_structures.is_empty() && !_uniform_set_has_valid_acceleration_structures(uniform_set),
+			"An acceleration structure in the uniform set was never built, or its BLASes were built or refit since: build or refit it (tlas_build(), tlas_update()) before binding it.");
 
 	if (p_index > compute_list.state.set_count) {
 		compute_list.state.set_count = p_index;
@@ -9145,7 +9222,9 @@ void RenderingDevice::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("blas_create", "geometries", "flags"), &RenderingDevice::_blas_create);
 	ClassDB::bind_method(D_METHOD("tlas_create", "max_instance_count", "flags"), &RenderingDevice::tlas_create);
 	ClassDB::bind_method(D_METHOD("blas_build", "blas"), &RenderingDevice::blas_build);
-	ClassDB::bind_method(D_METHOD("tlas_build", "tlas", "instances"), &RenderingDevice::_tlas_build);
+	ClassDB::bind_method(D_METHOD("tlas_build", "tlas", "instances"), &RenderingDevice::_tlas_build_bind);
+	ClassDB::bind_method(D_METHOD("blas_update", "blas"), &RenderingDevice::blas_update);
+	ClassDB::bind_method(D_METHOD("tlas_update", "tlas", "instances"), &RenderingDevice::_tlas_update_bind);
 
 	ClassDB::bind_method(D_METHOD("hit_sbt_create", "raytracing_pipeline", "initial_hit_group_capacity"), &RenderingDevice::hit_sbt_create);
 	ClassDB::bind_method(D_METHOD("hit_sbt_set_pipeline", "hit_sbt", "raytracing_pipeline"), &RenderingDevice::hit_sbt_set_pipeline);
@@ -10110,7 +10189,7 @@ RID RenderingDevice::_blas_create(const TypedArray<RDAccelerationStructureGeomet
 	return blas_create(geometries, p_flags);
 }
 
-Error RenderingDevice::_tlas_build(RID p_tlas, const TypedArray<RDAccelerationStructureInstance> &p_instances) {
+Error RenderingDevice::_tlas_build_bind(RID p_tlas, const TypedArray<RDAccelerationStructureInstance> &p_instances) {
 	thread_local LocalVector<AccelerationStructureInstance> instances;
 	instances.resize(p_instances.size());
 
@@ -10121,6 +10200,19 @@ Error RenderingDevice::_tlas_build(RID p_tlas, const TypedArray<RDAccelerationSt
 	}
 
 	return tlas_build(p_tlas, instances);
+}
+
+Error RenderingDevice::_tlas_update_bind(RID p_tlas, const TypedArray<RDAccelerationStructureInstance> &p_instances) {
+	thread_local LocalVector<AccelerationStructureInstance> instances;
+	instances.resize(p_instances.size());
+
+	for (int i = 0; i < p_instances.size(); i++) {
+		Ref<RDAccelerationStructureInstance> instance = p_instances[i];
+		ERR_FAIL_COND_V(instance.is_null(), ERR_INVALID_PARAMETER);
+		instances[i] = instance->base;
+	}
+
+	return tlas_update(p_tlas, instances);
 }
 
 Error RenderingDevice::_hit_sbt_range_update(RID p_hit_sbt, HitShaderBindingTableRange p_range, uint32_t p_offset, const Vector<int32_t> &p_hit_group_indices) {

@@ -26,7 +26,7 @@
 			<return type="int" enum="Error" />
 			<param index="0" name="blas" type="RID" />
 			<description>
-				Builds the [param blas].
+				Builds the [param blas] from its geometries' current vertex and index data. Any TLAS built with it must be built (or updated with [method tlas_update]) again before rays are traced through it.
 			</description>
 		</method>
 		<method name="blas_create" experimental="">
@@ -35,7 +35,16 @@
 			<param index="1" name="flags" type="int" enum="RenderingDevice.AccelerationStructureFlagBits" is_bitfield="true" />
 			<description>
 				Creates a new Bottom-Level Acceleration Structure (BLAS). It can be accessed with the RID that is returned.
+				The geometries' vertex and index buffers must be created with [constant BUFFER_CREATION_DEVICE_ADDRESS_BIT] and [constant BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT]. Pass [constant ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT] in [param flags] to refit it later with [method blas_update] (a skinned or otherwise deforming mesh).
 				Once finished with your RID, you will want to free the RID using the RenderingDevice's [method free_rid] method.
+			</description>
+		</method>
+		<method name="blas_update" experimental="">
+			<return type="int" enum="Error" />
+			<param index="0" name="blas" type="RID" />
+			<description>
+				Refits the [param blas] to its geometries' current vertex positions, keeping the tree of its last build: much cheaper than [method blas_build], for meshes that deform without changing their triangles (skinned characters, cloth, waves). The vertex count and the index data must not have changed since the last build; the tree degrades as vertices move far from where they were, so build it again now and then.
+				The BLAS must have been created with [constant ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT]: otherwise, or if it was never built, it's built instead. Any TLAS built with it must be built or updated again before rays are traced through it.
 			</description>
 		</method>
 		<method name="buffer_clear">
@@ -1296,7 +1305,17 @@
 				Builds the [param tlas]. The contents of previous builds are discarded.
 				Any BLAS provided through the [member RDAccelerationStructureInstance.blas] member must already have been built using the [method blas_build] method.
 				The number of instances can be equal to or smaller than the maximum instance count provided in the [method tlas_create] method.
-				[b]Note:[/b] Freeing or rebuilding any of the provided BLASes after this method invalidates the TLAS and requires it to be rebuilt.
+				For ray queries ([constant SUPPORTS_RAY_QUERY]) the instances need no [member RDAccelerationStructureInstance.hit_sbt_range]: leave it at [code]0[/code].
+				[b]Note:[/b] Freeing, rebuilding or updating any of the provided BLASes after this method invalidates the TLAS and requires it to be rebuilt or updated with [method tlas_update].
+			</description>
+		</method>
+		<method name="tlas_update" experimental="">
+			<return type="int" enum="Error" />
+			<param index="0" name="tlas" type="RID" />
+			<param index="1" name="instances" type="RDAccelerationStructureInstance[]" />
+			<description>
+				Refits the [param tlas] to [param instances], keeping the tree of its last build: much cheaper than [method tlas_build] when the same objects have moved (or their BLASes were refit with [method blas_update]). An instance may change its transform, mask, id, flags and even its BLAS, but there must be as many instances as at the last build, and an instance without a BLAS there must still have none (and the other way round).
+				When it can't be refit (it was created without [constant ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT], was never built, or the instances don't match the last build as above) it's built instead, so calling this every frame is always correct. Build it now and then when objects move far, as the tree degrades.
 			</description>
 		</method>
 		<method name="tlas_create" experimental="">
