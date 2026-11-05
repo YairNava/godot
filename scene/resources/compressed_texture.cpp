@@ -413,16 +413,7 @@ Ref<Image> CompressedTexture2D::load_image_from_file(Ref<FileAccess> f, int p_si
 		}
 
 	} else if (data_format == DATA_FORMAT_BASIS_UNIVERSAL) {
-		int sw = w;
-		int sh = h;
 		uint32_t size = f->get_32();
-		if (p_size_limit > 0 && (sw > p_size_limit || sh > p_size_limit)) {
-			//can't load this due to size limit
-			sw = MAX(sw >> 1, 1);
-			sh = MAX(sh >> 1, 1);
-			f->seek(f->get_position() + size);
-			return Ref<Image>();
-		}
 		Vector<uint8_t> pv;
 		pv.resize(size);
 		{
@@ -435,8 +426,26 @@ Ref<Image> CompressedTexture2D::load_image_from_file(Ref<FileAccess> f, int p_si
 			ERR_FAIL_COND_V(img.is_null() || img->is_empty(), Ref<Image>());
 		}
 		format = img->get_format();
-		sw = MAX(sw >> 1, 1);
-		sh = MAX(sh >> 1, 1);
+		// Wayforge: the file holds one Basis stream, all its levels together, so the size limit
+		// (the global one included) can't skip levels on disk as the other formats do. Decoded,
+		// the levels that fit are kept; without levels to fall back on, the whole image is.
+		if (p_size_limit > 0 && img->has_mipmaps() && (img->get_width() > p_size_limit || img->get_height() > p_size_limit)) {
+			for (int i = 1; i <= img->get_mipmap_count(); i++) {
+				int64_t ofs = 0;
+				int64_t len = 0;
+				int mw = 0;
+				int mh = 0;
+				img->get_mipmap_offset_size_and_dimensions(i, ofs, len, mw, mh);
+				if (mw > p_size_limit || mh > p_size_limit) {
+					continue;
+				}
+				Vector<uint8_t> rest = img->get_data().slice(ofs);
+				if (rest.size() != Image::get_image_data_size(mw, mh, img->get_format(), true)) {
+					break; // (a chain that doesn't halve as Image's own: keep the whole)
+				}
+				return Image::create_from_data(mw, mh, true, img->get_format(), rest);
+			}
+		}
 		return img;
 	} else if (data_format == DATA_FORMAT_IMAGE) {
 		int size = Image::get_image_data_size(w, h, format, mipmaps ? true : false);
