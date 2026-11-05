@@ -3367,6 +3367,10 @@
 		<member name="rendering/rendering_device/pipeline_cache/save_chunk_size_mb" type="float" setter="" getter="" default="3.0">
 			Determines at which interval pipeline cache is saved to disk. The lower the value, the more often it is saved.
 		</member>
+		<member name="rendering/rendering_device/raytracing/enable" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], the rendering device asks the graphics driver for hardware ray tracing (acceleration structures, ray queries and ray tracing pipelines) when the GPU has it, and reports it with [method RenderingDevice.has_feature] ([constant RenderingDevice.SUPPORTS_RAY_QUERY], [constant RenderingDevice.SUPPORTS_RAYTRACING_PIPELINE]). If [code]false[/code], the device starts without it, exactly as on a GPU that has none: use this (in [code]override.cfg[/code] for one machine) to rule out a driver problem, or to test a project's fallback.
+			[b]Note:[/b] Only the Vulkan driver supports hardware ray tracing so far; D3D12 and Metal always report it absent.
+		</member>
 		<member name="rendering/rendering_device/staging_buffer/block_size_kb" type="int" setter="" getter="" default="256">
 			The size of a block allocated in the staging buffers. Staging buffers are the intermediate resources the engine uses to upload or download data to the GPU. This setting determines the max amount of data that can be transferred in a copy operation. Increasing this will result in faster data transfers at the cost of extra memory.
 			[b]Note:[/b] This property is only read when the project starts. There is currently no way to change this value at run-time.

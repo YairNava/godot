@@ -2835,7 +2835,7 @@
 			Support for 32-bit image atomic operations.
 		</constant>
 		<constant name="SUPPORTS_RAY_QUERY" value="11" enum="Features">
-			Support for ray query extension.
+			Support for ray query extension: rays traced from any shader through a TLAS (in GLSL, [code]#extension GL_EXT_ray_query[/code] and an [code]accelerationStructureEXT[/code] uniform, bound with [constant UNIFORM_TYPE_ACCELERATION_STRUCTURE]), compute shaders included. The project setting [member ProjectSettings.rendering/rendering_device/raytracing/enable] turns it off.
 
 			[b]Note:[/b] This is currently only supported when using Vulkan. This is not supported on macOS and iOS (even on hardware supporting raytracing) due to MoltenVK limitations.
 		</constant>

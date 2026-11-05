@@ -726,7 +726,7 @@ public:
 	virtual uint32_t acceleration_structure_get_scratch_size_bytes(AccelerationStructureID p_acceleration_structure) override final;
 
 private:
-	void _acceleration_structure_create(VkAccelerationStructureTypeKHR p_type, VkAccelerationStructureBuildSizesInfoKHR p_size_info, AccelerationStructureInfo *r_accel_info);
+	bool _acceleration_structure_create(VkAccelerationStructureTypeKHR p_type, VkAccelerationStructureBuildSizesInfoKHR p_size_info, AccelerationStructureInfo *r_accel_info);
 
 private:
 	VkStridedDeviceAddressRegionKHR _sbt_to_vk_strided_device_address_region(const ShaderBindingTable &p_sbt);

@@ -581,10 +581,15 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 	_register_requested_device_extension(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, false);
-	_register_requested_device_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, false);
-	_register_requested_device_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, false);
-	_register_requested_device_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, false);
-	_register_requested_device_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, false);
+	// Wayforge: rendering/rendering_device/raytracing/enable turns hardware ray tracing off for the
+	// project (or for one machine, through override.cfg): the device then reports it absent.
+	if (GLOBAL_GET("rendering/rendering_device/raytracing/enable")) {
+		_register_requested_device_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, false);
+		_register_requested_device_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, false);
+		_register_requested_device_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, false);
+		_register_requested_device_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME, false);
+		_register_requested_device_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, false);
+	}
 	_register_requested_device_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, false); // Wayforge: get_video_memory_budget().
 
@@ -671,6 +676,22 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 		if (requested_device_extensions.has(extension_name)) {
 			enabled_device_extension_names.insert(extension_name);
 		}
+	}
+
+	// Wayforge: the ray tracing extensions stand on VK_KHR_acceleration_structure, which stands on
+	// VK_KHR_deferred_host_operations and buffer device addresses. Never enable one without what it
+	// needs: a device missing any of them goes without ray tracing (the stock renderer's paths).
+	// (The device's properties aren't read yet: _get_device_properties() comes after this.)
+	VkPhysicalDeviceProperties device_properties = {};
+	vkGetPhysicalDeviceProperties(physical_device, &device_properties);
+	const bool has_buffer_device_address = device_properties.apiVersion >= VK_API_VERSION_1_2 || enabled_device_extension_names.has(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+	if (!enabled_device_extension_names.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) || !has_buffer_device_address) {
+		enabled_device_extension_names.erase(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+	}
+	if (!enabled_device_extension_names.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)) {
+		enabled_device_extension_names.erase(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+		enabled_device_extension_names.erase(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+		enabled_device_extension_names.erase(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME);
 	}
 
 	// Now check our requested extensions.
@@ -915,6 +936,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		VkPhysicalDeviceVulkanMemoryModelFeatures memory_model_features = {};
 		VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features = {};
 		VkPhysicalDeviceRayTracingPipelineFeaturesKHR raytracing_pipeline_features = {};
+		VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features = {};
 		VkPhysicalDeviceSynchronization2FeaturesKHR sync_2_features = {};
 		VkPhysicalDeviceRayTracingValidationFeaturesNV raytracing_validation_features = {};
 
@@ -993,6 +1015,12 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			raytracing_pipeline_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
 			raytracing_pipeline_features.pNext = next_features;
 			next_features = &raytracing_pipeline_features;
+		}
+
+		if (enabled_device_extension_names.has(VK_KHR_RAY_QUERY_EXTENSION_NAME)) {
+			ray_query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+			ray_query_features.pNext = next_features;
+			next_features = &ray_query_features;
 		}
 
 		if (enabled_device_extension_names.has(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME)) {
@@ -1094,6 +1122,23 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		if (enabled_device_extension_names.has(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)) {
 			raytracing_capabilities.raytracing_pipeline_support = raytracing_pipeline_features.rayTracingPipeline;
 			raytracing_capabilities.validation = raytracing_validation_features.rayTracingValidation;
+		}
+
+		// Wayforge: ray queries (rays traced from any shader stage, compute included).
+		if (enabled_device_extension_names.has(VK_KHR_RAY_QUERY_EXTENSION_NAME)) {
+			ray_query_support = ray_query_features.rayQuery;
+		}
+
+		// Acceleration structures are built from buffer device addresses, and VK_KHR_acceleration_structure
+		// needs VK_KHR_deferred_host_operations: without both, report no ray tracing at all rather
+		// than fail later.
+		if (acceleration_structure_capabilities.acceleration_structure_support && (!buffer_device_address_support || !enabled_device_extension_names.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME))) {
+			acceleration_structure_capabilities.acceleration_structure_support = false;
+		}
+		if (!acceleration_structure_capabilities.acceleration_structure_support) {
+			raytracing_capabilities.raytracing_pipeline_support = false;
+			raytracing_capabilities.validation = false;
+			ray_query_support = false;
 		}
 	}
 
@@ -1432,6 +1477,14 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		raytracing_pipeline_features.pNext = create_info_next;
 		raytracing_pipeline_features.rayTracingPipeline = raytracing_capabilities.raytracing_pipeline_support;
 		create_info_next = &raytracing_pipeline_features;
+	}
+
+	VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features = {};
+	if (ray_query_support) {
+		ray_query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+		ray_query_features.pNext = create_info_next;
+		ray_query_features.rayQuery = VK_TRUE;
+		create_info_next = &ray_query_features;
 	}
 
 	VkPhysicalDeviceRayTracingValidationFeaturesNV raytracing_validation_features = {};
@@ -4251,9 +4304,11 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 	// Set bindings.
 	Vector<Vector<VkDescriptorSetLayoutBinding>> vk_set_bindings;
 	vk_set_bindings.resize(shader_refl.uniform_sets.size());
+	bool uses_acceleration_structures = false;
 	for (uint32_t i = 0; i < shader_refl.uniform_sets.size(); i++) {
 		for (uint32_t j = 0; j < shader_refl.uniform_sets[i].size(); j++) {
 			const ShaderUniform &uniform = shader_refl.uniform_sets[i][j];
+			uses_acceleration_structures = uses_acceleration_structures || uniform.type == UNIFORM_TYPE_ACCELERATION_STRUCTURE;
 			VkDescriptorSetLayoutBinding layout_binding = {};
 			layout_binding.binding = uniform.binding;
 			layout_binding.descriptorCount = 1;
@@ -4333,7 +4388,9 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 	Vector<uint8_t> decompressed_code;
 	VkShaderModule vk_module;
 	PackedByteArray decoded_spirv;
-	const bool use_respv = (RESPV_ENABLED == 1) && !shader_container_format.get_debug_info_enabled();
+	// Wayforge: re-spirv doesn't parse ray queries or ray tracing stages yet (it says so on stderr
+	// and leaves the shader as it is); shaders with acceleration structures go to the driver directly.
+	const bool use_respv = (RESPV_ENABLED == 1) && !shader_container_format.get_debug_info_enabled() && !uses_acceleration_structures;
 	const bool store_respv = use_respv && !shader_refl.specialization_constants.is_empty();
 	const int64_t stage_count = shader_refl.stages_vector.size();
 	shader_info.vk_stages_create_info.reserve(stage_count);
@@ -6338,7 +6395,10 @@ RDD::AccelerationStructureID RenderingDeviceDriverVulkan::blas_create(VectorView
 	size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 
 	device_functions.GetAccelerationStructureBuildSizesKHR(vk_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &accel_info->build_info, max_primitive_counts.ptr(), &size_info);
-	_acceleration_structure_create(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, size_info, accel_info);
+	if (!_acceleration_structure_create(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, size_info, accel_info)) {
+		acceleration_structure_free(AccelerationStructureID(accel_info));
+		return AccelerationStructureID();
+	}
 
 	return AccelerationStructureID(accel_info);
 #else
@@ -6386,7 +6446,10 @@ RDD::AccelerationStructureID RenderingDeviceDriverVulkan::tlas_create(uint32_t p
 
 	accel_info->range_infos.resize_initialized(1);
 
-	_acceleration_structure_create(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, size_info, accel_info);
+	if (!_acceleration_structure_create(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, size_info, accel_info)) {
+		acceleration_structure_free(AccelerationStructureID(accel_info));
+		return AccelerationStructureID();
+	}
 	return AccelerationStructureID(accel_info);
 #else
 	return AccelerationStructureID();
@@ -6417,9 +6480,10 @@ static VkDeviceAddress _align_up_address(VkDeviceAddress address, VkDeviceAddres
 }
 #endif
 
-void RenderingDeviceDriverVulkan::_acceleration_structure_create(VkAccelerationStructureTypeKHR p_type, VkAccelerationStructureBuildSizesInfoKHR p_size_info, AccelerationStructureInfo *r_accel_info) {
+bool RenderingDeviceDriverVulkan::_acceleration_structure_create(VkAccelerationStructureTypeKHR p_type, VkAccelerationStructureBuildSizesInfoKHR p_size_info, AccelerationStructureInfo *r_accel_info) {
 #if VULKAN_RAYTRACING_ENABLED
 	RDD::BufferID buffer = buffer_create(p_size_info.accelerationStructureSize, RDD::BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT | RDD::BUFFER_USAGE_STORAGE_BIT | RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT, RDD::MEMORY_ALLOCATION_TYPE_GPU, UINT64_MAX);
+	ERR_FAIL_COND_V_MSG(!buffer, false, "Couldn't create the buffer of a Vulkan raytracing acceleration structure.");
 	r_accel_info->buffer = buffer;
 
 	// Scratch address must be a multiple of minAccelerationStructureScratchOffsetAlignment.
@@ -6432,8 +6496,11 @@ void RenderingDeviceDriverVulkan::_acceleration_structure_create(VkAccelerationS
 	accel_create_info.size = p_size_info.accelerationStructureSize;
 	accel_create_info.buffer = ((const BufferInfo *)buffer.id)->vk_buffer;
 	VkResult err = device_functions.CreateAccelerationStructureKHR(vk_device, &accel_create_info, nullptr, &r_accel_info->vk_acceleration_structure);
-	ERR_FAIL_COND_MSG(err, vformat("Couldn't create Vulkan raytracing acceleration structure (VkResult error %d).", err));
+	ERR_FAIL_COND_V_MSG(err, false, vformat("Couldn't create Vulkan raytracing acceleration structure (VkResult error %d).", err));
 	r_accel_info->build_info.dstAccelerationStructure = r_accel_info->vk_acceleration_structure;
+	return true;
+#else
+	return false;
 #endif
 }
 
